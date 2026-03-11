@@ -1,0 +1,544 @@
+---
+title: "RVA Specialist Coding Assessment: Approach, Methodology and Reflections"
+author: "Tanny Wen"
+date: "2026-03-10"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(gtsummary)
+library(shiny)
+library(pharmaverseadam)
+```
+
+## Approach Overview
+
+**Overall Project Architecture & Data Strategy**
+
+The repository is organized into distinct, modular folders (`Question_1`, `Question_2`, `Question_3`), pairing each script with its respective output. This isolates the environments, ensuring that a reviewer can run and test one component without inadvertently altering the data or breaking the code for another. 
+
+**Data Integrity & Preparation:**
+
+* Core approach to ensure absolute data integrity before visualization
+* Instead of recycling a single summarized dataset for every task, I built custom data-prep pipelines for each question
+  * For example, in the Shiny application (Q3), I explicitly retained the `ACTARM` (Treatment Arm) variable in the grouping to allow for accurate dynamic filtering, while I dropped it for the static overall plot (Question 2)
+  * Utilized `dplyr::n_distinct(USUBJID)` in Q2 to guarantee I was counting unique patients rather than merely summing adverse event records, and implemented `filter(!is.na())` to remove missing variables that could skew the denominators
+* Have a bigger picture understanding of the data, syntax and functions -> prepare the input data according to the function, iterate to match sample output
+* Data exploration is important as it will help iterate my outputs, troubleshoot and verify if the solution makes sense
+
+### Question 1: TEAE Summary Table
+
+**Tool Selection & Regulatory Focus:**
+For the baseline Treatment-Emergent Adverse Event (TEAE) table, I utilized the `{gtsummary}` and `{gt}` packages. In clinical reporting, tables must closely mimic the strict formatting standards of a Clinical Study Report (CSR). `{gtsummary}` provided a robust, reproducible foundation for cross-tabulating the adverse events by Treatment Arm, while `{gt}` allowed for the granular customization required for presentation-ready outputs.
+
+**Readability & Cognitive Load:**
+A major design priority was reducing the cognitive load for the reviewer. Clinical tables can easily become overwhelming walls of text. To prevent this, I utilized HTML line breaks within the column headers to keep the table narrow and readable. Additionally, ensuring proper alignment and structured indentation (e.g., distinguishing System Organ Class from Preferred Term) creates a clear visual hierarchy, allowing the reader to scan the data logically rather than getting lost in the rows.
+
+### Question 2: Static Adverse Event Visualization
+
+**Visual Hierarchy & Orientation:**
+When designing the static `{ggplot2}` plot, my primary goal was immediate readability. Clinical System Organ Class (SOC) labels are naturally lengthy. If placed on the x-axis, the text would overlap and become unreadable. I implemented `coord_flip()` to ensure the text remained horizontal and legible. 
+
+**Data Sorting & Color Psychology:**
+To make the chart instantly actionable, I overrode the default alphabetical sorting by using `reorder()` combined with `FUN = sum`. This creates a descending cascade, instantly drawing the viewer's eye to the most frequent adverse events at the top of the chart. Finally, I used `scale_fill_manual` to apply a specific light-to-dark red color palette to the `AESEV` variable. This visually reinforces the clinical severity hierarchy (MILD to SEVERE) without the user needing to constantly reference the legend.
+
+### Question 3: Interactive Shiny Application
+
+**User Experience (UX) & Analytical Flexibility:**
+For the interactive `{shiny}` application, I transitioned from a standard single-select dropdown to a `checkboxGroupInput`. In a clinical setting, reviewers frequently need to compare specific cohorts (e.g., comparing Placebo directly against the High Dose arm while excluding the Low Dose arm). This UI choice grants the end-user full analytical flexibility to view any combination of data they need.
+
+**Error Handling & Safety Nets:**
+Interactive apps are prone to edge-case user behaviors, such as a user unchecking every single treatment arm box. Feeding completely empty data to `{ggplot2}` normally results in a crashed app and red error text. To prevent this, I implemented an `if (is.null(...))` safety net within the Server logic. If the user clears all selections, the app intercepts the error and smoothly renders a blank plot with a polite title prompting them to select at least one treatment arm.
+
+---
+
+## Methodology and Code
+
+### Data Exploration
+
+* set data to objects `df_ae` and `df_sl`
+* view columns
+* investigate data with ? in R console
+* consult online documentation, R CRAN reference manuals and cheat sheets
+
+```{r}
+# load data from pharmaverseadam, assign to objects
+df_ae <- pharmaverseadam::adae # adverse events analysis
+df_sl <- pharmaverseadam::adsl # subject level analysis
+
+# Extract the column names and their hidden "label" attributes into a new table
+adae_dictionary <- tibble(
+  Variable = colnames(df_ae),
+  Description = sapply(df_ae, attr, "label") %>% as.character()
+)
+view(adae_dictionary)
+
+adsl_dictionary <- tibble(
+  Variable = colnames(df_sl),
+  Description = sapply(df_sl, attr, "label") %>% as.character()
+)
+view(adsl_dictionary)
+```
+
+##### **What are ADaM Datasets and `{pharmaverseadam}`?**
+ADaM (Analysis Data Model) defines data set and metadata standards that support:
+
+* efficient generation, replication, and review of clinical trial statistical analyses, and
+* traceability among analysis results, analysis data, and data represented in the Study Data Tabulation Model (SDTM).
+
+`{pharmaverseadam}`: A set of synthetic ADaM data sets constructed using the Study Data Tabulation Model (SDTM) data sets contained in the 'pharmaversesdtm' package. Acts as a testing library for the `{admiral}` family of packages, ensuring clinical trial data derivations are compliant with CDISC standards for regulatory submissions
+
+
+### Investigate Data
+
+##### **What do the variables mean?**
+
+Variables related to assignment:
+
+* `USUBJID`: Unique Subject Identifier
+* `AESOC`: Primary System Organ Class
+* `AEDECOD`: Dictionary-Derived Term
+* `ACTARM`: Description of Actual Arm
+
+```{r}
+# investigate data
+?pharmaverseadam::adae # adverse events linked to each subject
+?pharmaverseadam::adsl # subjects of the stud(ies) with treatment, arm, etc
+
+```
+
+##### **How many rows are in each dataset?**
+
+* `df_ae` has more rows than Unique subjects
+  
+```{r}  
+# check for total number of rows
+nrow(df_ae)
+nrow(df_sl)
+```
+
+##### **How many unique subjects are in each dataset?**
+
+* df_ae has more rows than unique subjects; each unique subject ID in the adverse events data set may have more than one row associated
+
+```{r}
+# number of unique subjects in each data set
+df_ae %>% summarize(Total_Unique_Subjects = n_distinct(USUBJID))
+df_sl %>%  summarize(Total_Unique_Subjects = n_distinct(USUBJID))
+```
+
+##### **Does the dataset reference the same study?** 
+
+```{r}
+# check for unique StudyID for each data set
+unique_study_sl <- df_sl %>% distinct(STUDYID)
+unique_study_ae <- df_ae %>% distinct(STUDYID)
+unique_study_ae==unique_study_sl # same study for both data sets
+```
+
+##### **Which variables are different from each dataset?**
+
+```{r}
+common_cols <- intersect(names(df_sl), names(df_ae)) # common to both
+sl_only <- setdiff(names(df_sl), names(df_ae)) # SL only
+ae_only <- setdiff(names(df_ae), names(df_sl)) # AE only
+```
+
+```{r, echo=FALSE}
+# number of rows associated with the unique subject identifier in each data set
+sl_counts <- df_sl %>% count(USUBJID)
+ae_counts <- df_ae %>% count(USUBJID)
+```
+
+##### **What are the values associated with each of the relative variables?**
+```{r}
+# Primary System Organ Class (AESOC) 
+df_ae %>% distinct(AESOC)
+
+# Preferred Term/dictionary-derived term (AEDECOD)
+df_ae %>% distinct(AEDECOD)
+
+# preferred terms listed for each system organ class
+ae_hierarchy <- df_ae %>% distinct(AESOC, AEDECOD) %>% arrange(AESOC, AEDECOD)
+
+# distinct treatment groups 
+df_ae %>% distinct(ACTARM) # 3 treatment groups
+df_sl %>% distinct(ACTARM) # 4 treatment groups
+```
+
+##### **Do we have NAs in each of the datasets?**
+
+```{r}
+# check for NAs: summary of NAs for critical variables
+df_ae %>%
+  select(USUBJID, ACTARM, AESOC, AESEV, TRTEMFL) %>% #NAs exist for TRETEMFL
+  summarise(across(everything(), ~sum(is.na(.))))
+
+df_sl %>% select(USUBJID, ACTARM)%>%
+  summarise(across(everything(), ~sum(is.na(.))))
+
+```
+
+---
+
+### Question 1: TEAE Summary Table
+
+#### Data Preparation
+
+```{r}
+# create subset data of unique subject id, System Organ Class (AESOC) Preferred Term (AEDECOD), treatment,arm, treatment adverse event flag
+df_ae_trae <- df_ae %>% select(USUBJID, AESOC, AEDECOD, TRTEMFL) %>% distinct(USUBJID, AESOC, AEDECOD, TRTEMFL)
+
+# 2. Subject-level
+# create subset data of unique subjects with their treatment arm to join adverse event data; remove screen failure
+df_sl_treatment<- df_sl %>% 
+  filter(ACTARM %in% c("Placebo", "Xanomeline High Dose", "Xanomeline Low Dose")) %>% 
+  select(USUBJID, ACTARM)
+
+# 3. joined data
+# join data by unique subject ID
+df_ae_sl <- left_join(df_sl_treatment, df_ae_trae, by = "USUBJID")
+
+```
+
+```{r}
+# number of unique subjects for each patient group
+df_ae_sl %>% group_by(ACTARM) %>% summarize(N = n_distinct(USUBJID))
+
+# Count unique subjects by Treatment Arm and the TEAE Flag
+df_ae_sl %>% group_by(ACTARM, TRTEMFL) %>% summarize(N = n_distinct(USUBJID))
+
+# count unique subjects by treatment arm, TEAE flag and AESOC
+# note: cardiac disorder for placebo = 12, treatment flag = Y
+df_ae_sl %>% group_by(ACTARM, TRTEMFL, AESOC) %>% summarize(N = n_distinct(USUBJID))
+
+# count unique subjects by treatment arm, TEAE flag, AESOC, and AEDECOD
+# note: placebo, cardiac disorder, atrial fibrillation, treatment flag Y -> n = 1
+df_ae_sl %>% group_by(ACTARM, TRTEMFL, AESOC, AEDECOD) %>% summarize(N = n_distinct(USUBJID))
+```
+
+#### Create summary table using `{gtsummary}`
+
+Breakdown from data exploration:
+
+* columns show the total number of unique subjects in each treatment arm inclusive of all treatment flags (Yes, NAs)
+* first row shows the number of subjects that only have TRTEMFL == "Y"
+* second row and onward - breakdown of AESOC as "header" category with TRTEMFL = Y, followed by AEDECOD
+* n = 0s are included (e.g. placebo, cardiac disorder, atrial flutter, treatment flag Y -> n = 0)
+* stratification variable needs to be a factor (i.e. by = ACTARM; ACTARM needs to be factor)
+* data is the numerator/instances; only subjects who experienced an event
+
+Steps:
+
+1. Prepare the denominator (full population)
+
+```{r}
+sl_pop_data <- df_sl_treatment %>% mutate(ACTARM = droplevels(factor(ACTARM)))
+```
+
+2. Prepare the Data (The events only)
+
+* Filter joined data set to strictly the records where an event occurred
+
+```{r}
+ae_only_data <- df_ae_sl %>%
+  filter(TRTEMFL == "Y") %>% 
+  mutate(ACTARM = droplevels(factor(ACTARM)))
+```
+
+3. Build the hierarchical table
+```{r}
+summarytable_teae <- tbl_hierarchical(
+  data = ae_only_data,             # numerator for subjects where TRTEMFL=Y
+  variables = c(AESOC, AEDECOD),
+  by = ACTARM,
+  denominator = sl_pop_data,       # denominator; full population for the N calculation
+  id = USUBJID,
+  overall_row = TRUE,
+  # Rename first row of treatment emergent adverse events
+  label = list(..ard_hierarchical_overall.. = "Treatment Emergent Adverse Events") 
+)
+```
+
+4. Polish table appearance (rounding of values, headers, styling) through iteration
+
+* all N values are whole numbers
+* first row % is rounded to the nearest whole number
+* all AESOC % is rounded to the nearest whole number
+* all AEDECOD % is rounded to the first decimal place
+* If N = 0, percentage should have no decimal (0%)
+
+```{r}
+summarytable_teae <- tbl_hierarchical(
+  data = ae_only_data,             # numerator for subjects where TRTEMFL=Y
+  variables = c(AESOC, AEDECOD),
+  by = ACTARM,
+  denominator = sl_pop_data,       # denominator; full population for the N calculation
+  id = USUBJID,
+  overall_row = TRUE,
+  digits = list(
+    "..ard_hierarchical_overall.." = c(0, 0),  # 0 decimals for N, 0 for % (Whole number)
+    "AESOC" = c(0, 0),                         # 0 decimals for N, 0 for % (Whole number)
+    # Custom function ONLY for Preferred Terms to keep 1 decimal (but clean 0%)
+    "AEDECOD" = list(0, function(x) ifelse(is.na(x), NA_character_, ifelse(x == 0, "0", sprintf("%.1f", x * 100))))                       
+  ),
+  # Rename first row of treatment emergent adverse events
+  label = list(..ard_hierarchical_overall.. = "Treatment Emergent Adverse Events") 
+)
+```
+
+```{r}
+summarytable_teae_final <-summarytable_teae %>% 
+  modify_indent(
+    columns = label,                 # Target the text column
+    rows = variable == "AEDECOD",    # Apply this specifically to the Preferred Terms
+    indent = 4L                      # 4 spaces of indentation (change to 8L if you want it deeper)
+  ) %>%
+  modify_header(
+  # Rename the first column
+  label = "**System Organ Class / Preferred Term**", 
+  # Update all treatment columns dynamically
+  all_stat_cols() ~ "**{level}**<br>N = {n}" 
+) %>%
+  # Bolds the System Organ Class names
+  bold_labels()
+
+summarytable_teae_final
+```
+
+5. Export as HTML
+```{r}
+library(gt)
+
+# Convert and save final table export as HTML
+filepath_q1 <- "/cloud/project/Question_1"
+summarytable_teae_final %>% 
+  as_gt() %>% gtsave(filename = "output_teae_summary_table.html", path = filepath_q1)
+```
+
+---
+
+### Question 2: AE Severity Visualization
+
+#### Data Preparation
+```{r}
+# load data from pharmaverseadam, assign to object
+df_ae <- pharmaverseadam::adae # adverse events analysis
+
+# prepare table for plot creation
+# stacked bar chart: number of unique subjects per SOC per severity
+# column 1: AESOC, column 2: severity (AESEV), column 3: unique count of unique subjects
+df_ae_plot <- df_ae %>% group_by(AESOC, AESEV) %>% summarize(N_UNIQSUBJID = n_distinct(USUBJID))
+
+# convert "AESEV" variable to factor and specify level order for plot
+# order of bars is top to bottom for vertical bar chart
+df_ae_plot$AESEV <- factor(df_ae_plot$AESEV, levels = c("SEVERE", "MODERATE", "MILD"))
+```
+
+#### Create visualization: Unique subjects per system organ class and severity level
+
+###### Logic and argument breakdown:
+
+1. ggplot() & aes(): 
+
+* Initializes the plot using the 'df_ae_plot' data set
+* reorder(AESOC, N_UNIQSUBJID, FUN = sum): Sorts the SOC categories by the total sum of subjects across all severity levels in descending order
+* fill = AESEV: Groups and colours the sections of the stacked bars by Severity.
+
+2. geom_bar(stat = "identity"): 
+
+* Instructs ggplot to map the exact numeric values from 'N_UNIQSUBJID' to  the bar lengths, rather than simply counting the underlying data rows
+
+3. coord_flip(): 
+
+* Flips the X and Y axes to create a horizontal bar chart
+
+4. xlab(), ylab(), & labs(): 
+
+* modify titles of axes legend
+
+5. scale_fill_manual(): 
+
+* Applies a custom hex colour palette (light to dark red) to the bars
+* used online screen colour picker tool to match assessment output
+* breaks = reorder severity values only in legend without affecting plot
+
+6. theme_minimal(): 
+
+* Strips away heavy background shading and thick gridlines for a clean to match for clean output; closest match to assessment output
+
+```{r}
+# stacked bar chart with multiple groups
+# - number of unique subjects per SOC, coloured by AE severity
+plot_ae <- ggplot(
+  data=df_ae_plot, 
+  aes(x=reorder(AESOC, N_UNIQSUBJID, FUN = sum), y = N_UNIQSUBJID, fill=AESEV))+ 
+  geom_bar(stat="identity")+
+  coord_flip()+ 
+  xlab("System Organ Class")+ 
+  ylab("Number of Unique Subjects")+ 
+  labs(title="Unique Subjects per SOC and Severity Level",
+       fill="Severity")+ 
+  scale_fill_manual(values=c("#fee0d2", "#fc9272", "#de2d26"),
+                    breaks=c("MILD","MODERATE","SEVERE"))+ 
+  theme_minimal()
+```
+
+```{r fig.width=20, fig.height=8}
+plot_ae  
+```
+
+#### Export as PNG file
+
+```{r}
+filepath_q2 <- "/cloud/project/Question_2"
+ggsave(
+  filename = "output_AE_Severity_Visualization.png",
+  plot = plot_ae,
+  width = 20, 
+  height = 8, 
+  dpi = 320,
+  path=filepath_q2)
+```
+
+---
+
+### Question 3: Interactive R Shiny Application
+
+Learned using [Youtube Tutorial: Web Apps in R: Build Interactive Histogram Web Application in R | Shiny Tutorial Ep 2](https://www.youtube.com/watch?v=lC1Dk6gUbe0&list=PLtqF5YXg7GLkxx_GGXDI_EiAvkhY9olbe&index=3)
+
+#### Data Preparation
+
+* create new data set just for question 3; unique number of subjects per system organ class and severity level
+* include treatment arm variable to use for filtering in Shiny app later
+
+```{r, echo=FALSE}
+library(pharmaverseadam) 
+library(tidyverse) 
+library(gtsummary) 
+library(ggplot2) 
+library(shiny)
+```
+
+```{r}
+# load data from pharmaverseadam, assign to object
+df_ae <- pharmaverseadam::adae # adverse events analysis
+
+# Create a new data set just for Question 3
+# Unique number of Subjects per System Organ Class (SOC) and Severity Level
+# include treatment arm variable to use for filtering in Shiny app later
+df_ae_shiny <- df_ae %>%
+  group_by(ACTARM, AESOC, AESEV) %>%
+  summarize(
+    N_UNIQSUBJID = n_distinct(USUBJID), 
+    .groups = "drop") %>%
+  filter(!is.na(AESEV)) # Drop missing severity if any exist
+
+df_ae_shiny$AESEV <- factor(df_ae_shiny$AESEV, levels = c("SEVERE", "MODERATE", "MILD"))
+```
+
+#### Create Shiny App
+Create the User Interface (UI) and server for `shinyApp()`
+
+1. User Interface (ui)
+
+* use `fluidPage()` to create a user interface that dynamically scales its components in real-time to fill the available browser width
+* `titlePanel()`: app title
+* `checkboxGroupInput()`: user can interactively select treatment arms to show on plot
+  * `arm_filter`: inputId/variable for the treatment arm filter that reacts to user selection
+  * `choices`: filter choices are derived from values in ACTARM
+  * `selected`: by default, pre-check all treatment arm boxes
+
+```{r}
+# 1. User interface
+ui <- fluidPage(
+  titlePanel("AE Summary Interactive Dashboard"), # App title
+  sidebarLayout(
+    sidebarPanel(
+      checkboxGroupInput(
+        inputId = "arm_filter", 
+        label = "Select Treatment Arm(s):",
+        choices = unique(df_ae_shiny$ACTARM),
+        selected = unique(df_ae_shiny$ACTARM) 
+      )
+    ),
+    mainPanel( # display output from server
+      plotOutput(outputId = "standard_plot", height = "600px") # output is a plot to display
+    )
+  )
+)
+```
+
+2. Server
+* server accepts user input from UI, sends output back to UI to display in mainPanel
+* plot is filterable using `reactive()`- returns data frame that is filtered by treatment arm based on user input
+* `outputID` standard_plot will return:
+  * blank plot with text if no treatment arm is selected
+  * stacked bar plot with data filtered by treatment arm(s) selected by user input
+
+```{r}
+server <- function(input, output) { # server accepts user input from UI, sends output back to UI to display in mainPanel
+  
+  # Reactive Filter
+  filtered_data <- reactive({
+    df_ae_shiny %>%
+      filter(ACTARM %in% input$arm_filter) # return data frame that is filtered by treatment arm based on user input
+  })
+  
+  # Render Plot
+  output$standard_plot <- renderPlot({
+    
+    # Optional safety check: If no boxes are checked, return a blank plot smoothly
+    if (is.null(input$arm_filter)) {
+      return(ggplot() + theme_void() + ggtitle("Please select at least one Treatment Arm."))
+    }
+    
+    # ggplot code from question 2
+    ggplot(
+      data = filtered_data(), 
+      aes(x = reorder(AESOC, N_UNIQSUBJID, FUN = sum), y = N_UNIQSUBJID, fill = AESEV)) +
+      geom_bar(stat = "identity") +
+      coord_flip() + 
+      xlab("System Organ Class") + 
+      ylab("Number of Unique Subjects") + 
+      labs(
+        title = "Unique Subjects per SOC and Severity Level",
+        fill = "Severity"
+      ) + 
+      scale_fill_manual(
+        values = c("#fee0d2", "#fc9272", "#de2d26"),
+        breaks = c("MILD", "MODERATE", "SEVERE")
+      ) + 
+      theme_minimal()
+    
+  })
+}
+```
+
+#### Run the app
+
+```{r fig.width=20, fig.height=10}
+shinyApp(ui = ui, server = server)
+```
+
+---
+
+## Reflections and Key Takeaways
+
+**What I Learned**
+
+* Working with these datasets gave me a profound appreciation for the cleanliness, standardization, and reproducibility of CDISC ADaM data.
+* Rebuilding my muscle memory and working knowledge - while I initially felt a bit rusty, I successfully navigated building comprehensive R Markdown reports, rendering static visualizations, and setting up version control using GitHub
+* Rapid upskilling -  Completing this project in just one week proved how much can be learned in a short timeframe. It has completely reignited my curiosity and creativity to integrate more R and Shiny development into my day-to-day job
+* Connecting code to the real world -  this assessment has provided a better understanding of the clinical programmer's role: transforming complex clinical datasets into meaningful, accessible visualizations (both static and dynamic) that empower clinicians to make rapid, data-driven decisions
+
+**Challenges Overcome**
+
+* Learning `{gtsummary}`: learning the specific syntax required to structure, format, and nest complex clinical information into a presentation-ready table was a steep but highly valuable learning curve
+* Learning R Shiny: transitioning from standard, line-by-line R scripting to Shiny's reactive, event-driven syntax was a major mental shift, but an incredibly rewarding framework to learn
+* Overall accelerated learning via AI: Rather than relying on AI to simply write the Shiny application, I leveraged it as an interactive tutor. Its ability to provide step-by-step breakdowns and conceptual explanations of reactive programming drastically reduced my learning curve, allowing me to grasp the core mechanics of Shiny much faster than traditional troubleshooting
+
